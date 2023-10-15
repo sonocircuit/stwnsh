@@ -36,6 +36,7 @@ eMASH = 1
 eREST = 2
 quantize_event = {}
 quantize_rate = 1/4
+quantize_edit = false
 
 pattern_focus = 1
 pattern_edit = false
@@ -75,6 +76,8 @@ options.pattern_meter = {"2/4", "3/4", "4/4", "5/4", "6/4", "7/4", "9/4", "11/4"
 options.meter_val = {2/4, 3/4, 4/4, 5/4, 6/4, 7/4, 9/4, 11/4}
 options.rate_names = {"-400%", "-200%", "-100%", "-50%", "-25%", "-12.5&", "STOP", "12.5%", "25%", "50%", "100%", "200%", "400%"}
 options.rate_values = {-4, -2, -1, -0.5, -0.25, -0.125, 0, 0.125, 0.25, 0.5, 1, 2, 4}
+options.key_quant_names = {"1/32", "1/16", "1/8", "1/4", "1/2", "1/1"}
+options.key_quant_values = {1/8, 1/4, 1/2, 1, 2, 4}
 
 mash_l_params = {"mash_start_l_", "mash_length_l_", "mash_pan_l_", "mash_rate_l_", "mash_rate_slew_l_"}
 mash_r_params = {"mash_start_r_", "mash_length_r_", "mash_pan_r_", "mash_rate_r_", "mash_rate_slew_r_"}
@@ -157,12 +160,16 @@ end
 function make_mash(i, slot)
   local slot = slot or 1
   -- do homework
+  local q = track[i].loop_len / 16
   local lstart_l = track[i].startpoint + (mash[slot].srt_l - 1) / 16 * track[i].loop_len
   local lstart_r = track[i].startpoint + (mash[slot].srt_r - 1) / 16 * track[i].loop_len
-  local lend_l = lstart_l + (track[i].loop_len / 16) * mash[slot].len_l
-  local lend_r = lstart_r + (track[i].loop_len / 16) * mash[slot].len_r
+  local lend_l = track[i].startpoint + (mash[slot].srt_l - 1 + mash[slot].len_l) / 16 * track[i].loop_len + q
+  local lend_r = track[i].startpoint + (mash[slot].srt_r - 1 + mash[slot].len_r) / 16 * track[i].loop_len + q
+  --local lend_l = lstart_l + (track[i].loop_len / 16) * mash[slot].len_l
+  --local lend_r = lstart_r + (track[i].loop_len / 16) * mash[slot].len_r
   local pos_l = mash[slot].rate_l > 0 and lstart_l or lend_l
   local pos_r = mash[slot].rate_r > 0 and lstart_r or lend_r
+
   -- playtime
   softcut.pan(i, mash[slot].pan_l)
   softcut.pan(i + 3, mash[slot].pan_r)
@@ -206,8 +213,8 @@ function randomize_mash(i, ch)
     params:set("mash_pan_l_"..i, (math.random() * 20 - 10) / 10)
     params:set("mash_start_l_"..i, math.random(1, 16))
     params:set("mash_length_l_"..i, math.random(1, 17 - mash[i].srt_l))
-    params:set("mash_rate_l_"..i, math.pow(2, math.random(-2, 2)) * (math.random(0, 1) > 0.5 and 1 or -1))
-    params:set("mash_rate_slew_l_"..i, math.random())
+    params:set("mash_rate_l_"..i, math.random(1, 13))
+    params:set("mash_rate_slew_l_"..i, math.random(1, 13))
   elseif ch == "r" then
     params:set("mash_pan_r_"..i, (math.random() * 20 - 10) / 10)
     params:set("mash_start_r_"..i, math.random(1, 16))
@@ -673,6 +680,10 @@ function init()
     params:set_action("pattern_beatnum_"..i, function(num) pattern[i].beatnum = num * 4 update_pattern_length(i) dirtygrid = true end)
   end
 
+  params:add_option("key_quantization", "key quantization", options.key_quant_names, 2)
+  params:set_action("key_quantization", function(idx) quantize_rate = options.key_quant_values[idx] end)
+  params:hide("key_quantization")
+
   -- pset callbacks
   params.action_write = function(filename, name, number)
     os.execute("mkdir -p "..norns.state.data.."patterns/"..number.."/")
@@ -798,7 +809,9 @@ function key(n, z)
   if n == 1 then
     shift = z == 1 and true or false
   end
-  if mash_edit then
+  if quantize_edit then
+    --
+  elseif mash_edit then
     if n == 2 and z == 1 then
       if shift then
         randomize_mash(mash_focus, "l")
@@ -837,7 +850,14 @@ function enc(n, d)
   if n == 1 then
     -- do nothing
   end
-  if mash_edit then
+  if quantize_edit then
+    if n == 2 then
+      params:delta("key_quantization", d)
+    elseif n == 3 then
+      params:delta("key_quantization", d)
+    end
+    dirtyscreen = true
+  elseif mash_edit then
     if n == 2 then
       params:delta(mash_l_params[mash_param]..mash_focus, d)
     elseif n == 3 then
@@ -865,7 +885,19 @@ end
 
 function redraw()
   screen.clear()
-  if mash_edit then
+  if quantize_edit then
+    -- mash edit params
+    screen.font_face(2)
+    screen.font_size(8)
+    screen.level(15)
+    screen.move(64, 12)
+    screen.text_center("KEY  QUANTIZATION")
+
+    screen.font_size(32)
+    screen.move(64, 48)
+    screen.text_center(params:string("key_quantization"))
+
+  elseif mash_edit then
     -- mash edit params
     screen.font_face(2)
     screen.font_size(8)
@@ -928,7 +960,7 @@ function redraw()
 
     screen.level(coin == 1 and 0 or math.random(4, 15) + math.floor(screen_level_off / 3))
     screen.font_face(math.random(1, 24))
-    screen.font_size(math.random(8, 32) + font_size_off)
+    screen.font_size(math.random(10, 44) + font_size_off)
     screen.move(14, math.random(32, 48) + math.floor(font_size_off / 2))
     screen.text_center("S")
     
@@ -940,7 +972,7 @@ function redraw()
     
     screen.level(coin == 1 and 0 or math.random(4, 15) + math.floor(screen_level_off / 3))
     screen.font_face(math.random(1, 24))
-    screen.font_size(math.random(8, 32) + font_size_off)
+    screen.font_size(math.random(12, 40) + font_size_off)
     screen.move(54, math.random(32, 48)+ math.floor(font_size_off / 2))
     screen.text_center("W")
     
@@ -958,7 +990,7 @@ function redraw()
     
     screen.level(coin == 1 and 0 or math.random(4, 15) + math.floor(screen_level_off / 3))
     screen.font_face(math.random(1, 24))
-    screen.font_size(math.random(8, 32) + font_size_off)
+    screen.font_size(math.random(10, 36) + font_size_off)
     screen.move(114, math.random(32, 48))
     screen.text_center("H")
   end
@@ -1085,6 +1117,9 @@ function g.key(x, y, z)
       if pattern_edit and mash_edit then
         mash_edit = false
       end
+      dirtyscreen = true
+    elseif y == 8 and x == 16 then
+      quantize_edit = z == 1 and true or false
       dirtyscreen = true
     end
   end
