@@ -1,4 +1,4 @@
--- stwnsh v0.1.1 @sonocircuit
+-- stwnsh v0.1.6 @sonocircuit
 -- llllllll.co/t/stwnsh
 --
 -- mash recordings at 
@@ -31,14 +31,15 @@ editkey = 0
 mash_focus = 1
 mash_edit = false
 mash_param = 1
+amsh_step_edit = 0
 
 is_running = false
-beat_sec = 60/params:get("clock_tempo")
+beat_sec = 60 / params:get("clock_tempo")
 prev_beat_sec = beat_sec
 
 -- patterns
 eMASH = 1
-eREST = 2
+eRSET = 2
 quantize_event = {}
 quantize_rate = 1/4
 quantize_edit = false
@@ -89,10 +90,10 @@ options.mash_length_names = {"1/16", "1/8", "3/16", "1/4", "5/16", "3/8", "7/16"
 options.mash_length_values = {1/16, 1/8, 3/16, 1/4, 5/16, 3/8, 7/16, 1/2, 9/16, 5/8, 11/16, 3/4, 13/16, 7/8, 15/16, 1}
 
 -- track params
-track_l_params = {"track_length_", "rec_level_", "track_cutoff_"}
+track_l_params = {"track_length_", "input_src_", "track_cutoff_"}
 track_r_params = {"track_level_", "dub_level_", "track_rq_"}
-track_l_names = {"length", "rec level", "cutoff"}
-track_r_names = {"level", "overdub level", "filter q"}
+track_l_names = {"LENGTH", "INPUT", "CUTOFF"}
+track_r_names = {"LEVEL", "OVERDUB", "FILTER Q"}
 
 -- mash params
 mash_l_params = {"mash_start_l_", "mash_length_l_", "mash_pan_l_", "mash_rate_l_", "mash_rate_slew_l_"}
@@ -127,6 +128,20 @@ for i = 1, NUM_TRACKS do
   track[i].startpoint = 1 + (i - 1) * (MAX_TAPELENGTH + 1)
   track[i].endpoint = track[i].startpoint + beat_sec * track[i].beat_num
   track[i].loop_len = track[i].endpoint - track[i].startpoint
+  -- automash section
+  track[i].amsh_queued = false
+  track[i].amsh_active = false
+  track[i].amsh_edit = false
+  track[i].amsh_beatnum = 4
+  track[i].amsh_step = 16
+  track[i].amsh_step_max = 16
+  track[i].amsh_pattern = {}
+  for s = 1, 16 do
+    track[i].amsh_pattern[s] = {}
+    track[i].amsh_pattern[s].step = false
+    track[i].amsh_pattern[s].prob = 50
+    track[i].amsh_pattern[s].pool = {}
+  end
 end
 
 -- display softcut playheads
@@ -170,9 +185,11 @@ end
 -- clock ids
 tracksync = {}
 trackstep = {}
+amshstep = {}
 for i = 1, NUM_TRACKS do
   tracksync[i] = nil
   trackstep[i] = nil
+  amshstep[i] = nil
 end
 
 -- track held mash keys
@@ -183,6 +200,11 @@ end
 
 --------- functions ----------
 function make_mash(i, slot)
+  mash_active = true
+  track[i].mash = true
+  track[i].active_mash = slot
+  track[i].rec = false
+  set_rec(i)
   local pos_l = mash[slot].rate_l >= 0 and mashpoint[i][slot].s_l or mashpoint[i][slot].e_l
   local pos_r = mash[slot].rate_r >= 0 and mashpoint[i][slot].s_r or mashpoint[i][slot].e_r
   softcut.pan(i, mash[slot].pan_l)
@@ -203,10 +225,15 @@ end
 
 -- revert to position
 function reset_track(i)
+  track[i].mash = false
+  mash_active = get_global_mash_state()
   if not track[i].monitor then
     softcut.level(i, 0)
     softcut.level(i + 3, 0)
   end
+  track[i].rec = track[i].prev_rec and true or false
+  track[i].prev_rec = false
+  set_rec(i)
   local pos = track[i].startpoint + (track[i].step - 1) / 16 * track[i].loop_len
   softcut.loop_start(i, track[i].startpoint)
   softcut.loop_start(i + 3, track[i].startpoint)
@@ -221,6 +248,7 @@ function reset_track(i)
   softcut.rate(i, 1)
   softcut.rate(i + 3, 1)
   track[i].active_mash = 0
+  dirtyscreen = true
 end
 
 -- set track length and softcut loop
@@ -309,6 +337,36 @@ function set_filter_type(i, option)
   softcut.post_filter_br(i + 3, option == 4 and 1 or 0)
 end
 
+function set_track_source(option) -- select audio source
+  audio.level_adc_cut(option == 3 and 0 or 1)
+  audio.level_eng_cut(option == 2 and 0 or 1)
+  audio.level_tape_cut(option == 1 and 0 or 1)
+end
+
+function set_softcut_input(i, option)
+  -- set source
+  audio.level_adc_cut(option < 4 and 1 or 0)
+  audio.level_eng_cut(option == 4 and 1 or 0)
+  audio.level_tape_cut(option == 5 and 1 or 0)
+  -- set softcut inputs
+  if option == 1 or option > 3 then -- L&R
+    softcut.level_input_cut(1, i, 0.707)
+    softcut.level_input_cut(2, i, 0)
+    softcut.level_input_cut(1, i + 3, 0)
+    softcut.level_input_cut(2, i + 3, 0.707)
+  elseif option == 2 then -- L IN
+    softcut.level_input_cut(1, i, 1)
+    softcut.level_input_cut(2, i, 0)
+    softcut.level_input_cut(1, i + 3, 1)
+    softcut.level_input_cut(2, i + 3, 0)
+ elseif option == 3 then -- R IN
+    softcut.level_input_cut(1, i, 0)
+    softcut.level_input_cut(2, i, 1)
+    softcut.level_input_cut(1, i + 3, 0)
+    softcut.level_input_cut(2, i + 3, 1)
+  end
+end
+
 function toggle_rec(i)
   track[i].rec = not track[i].rec
   set_rec(i)
@@ -343,26 +401,15 @@ function set_levels(i)
   end
 end
 
--- reset track playback position via clock coroutine
-function reset_pos_callback(i)
-  -- oneshot recording
-  if not track[i].mash then
-    softcut.position(i, track[i].startpoint)
-    softcut.position(i + 3, track[i].startpoint)
-    if track[i].oneshot then
-      if track[i].rec then
-        track[i].rec = false
-        set_rec(i)
-        track[i].oneshot = false
-      else
-        track[i].rec = true
-        set_rec(i)
-      end
-    end
-  end
-  -- set track length
-  if track[i].beat_num ~= track[i].beat_num_new then
-    set_track_len(i, track[i].beat_num_new)
+function toggle_amsh(i)
+  if track[i].amsh_active then
+    track[i].prev_rec = false
+    track[i].amsh_active = false
+    reset_track(i)
+  elseif track[i].amsh_queued then
+    track[i].amsh_queued = false
+  else
+    track[i].amsh_queued = true
   end
 end
 
@@ -390,7 +437,7 @@ end
 
 --------- clock functions --------
 function clock.tempo_change_handler(bpm)
-  beat_sec = 60/params:get("clock_tempo")
+  beat_sec = 60 / params:get("clock_tempo")
   if prev_beat_sec ~= beat_sec then
     for i = 1, NUM_TRACKS do
       set_track_len(i)
@@ -401,6 +448,7 @@ end
 
 function ledpulse_fast()
   pulse_key_fast = pulse_key_fast == 8 and 12 or 8
+  if is_pattern_rec then dirtygrid = true end
 end
 
 function ledpulse_mid()
@@ -436,52 +484,89 @@ end
 function reset_pos(i)
   while true do
     clock.sync(track[i].beat_num)
-    reset_pos_callback(i)
+    -- oneshot recording
+    if not track[i].mash then
+      softcut.position(i, track[i].startpoint)
+      softcut.position(i + 3, track[i].startpoint)
+      if track[i].oneshot then
+        if track[i].rec then
+          track[i].rec = false
+          set_rec(i)
+          track[i].oneshot = false
+        else
+          track[i].rec = true
+          set_rec(i)
+        end
+      end
+    end
+    -- set track length
+    if track[i].beat_num ~= track[i].beat_num_new then
+      set_track_len(i, track[i].beat_num_new)
+    end
+    -- reset step count
     track[i].step = 0
+    -- set trig mode
+    if track[i].amsh_queued then
+      track[i].amsh_active = true
+      track[i].amsh_step = 0
+      track[i].amsh_queued = false
+      track[i].prev_rec = false
+      track[i].rec = true
+      set_rec(i)
+    end
   end
 end
 
 function step_track(i)
   while true do
     clock.sync(track[i].beat_num / 16)
-    track[i].step = track[i].step + 1
     if track[i].step >= 16 then
       track[i].step = 0
     end
-    if track[i].mash then
-      dirtyscreen = true
+    track[i].step = track[i].step + 1
+    if track[i].mash then dirtyscreen = true end
+    if not track[i].amsh_edit then dirtygrid = true end
+  end
+end
+
+function step_amsh(i)
+  while true do
+    clock.sync(track[i].amsh_beatnum / 16)
+    if track[i].amsh_step >= track[i].amsh_step_max then
+      track[i].amsh_step = 0
     end
+    track[i].amsh_step = track[i].amsh_step + 1
+    if track[i].amsh_pattern[track[i].amsh_step].step and track[i].amsh_active then
+      if track[i].mash then
+        track[i].prev_rec = true
+        reset_track(i)
+      end
+      if math.random(100) <= track[i].amsh_pattern[track[i].amsh_step].prob then
+        local collection = track[i].amsh_pattern[track[i].amsh_step].pool
+        local idx = math.random(1, #collection)
+        local slot = collection[idx]
+        make_mash(i, slot)
+      end
+    end
+    if track[i].amsh_edit then dirtygrid = true end
   end
 end
 
 -------- pattern recording --------
 function event_exec(e)
-  if e.t == eMASH then
+  if e.t == eMASH and not track[e.i].amsh_active then
+    track[e.i].prev_rec = track[e.i].rec and true or false
     make_mash(e.i, e.slot)
-    mash_active = true
-    track[e.i].mash = true
-    track[e.i].active_mash = e.slot
     pattern[e.p].active_mash[e.i] = e.slot
-    if track[e.i].rec then
-      track[e.i].prev_rec = true
-      toggle_rec(e.i)
-    end
-  elseif e.t == eREST then
-    if not track[e.i].hold then
-      reset_track(e.i)
-      mash_active = get_global_mash_state()
-      track[e.i].mash = false
-      pattern[e.p].active_mash[e.i] = 0
-      if track[e.i].prev_rec and not track[e.i].rec then
-        track[e.i].prev_rec = false
-        toggle_rec(e.i)
-      end
-      coin = 0
-      dirtyscreen = true
-    end
+  elseif e.t == eRSET and not (track[e.i].hold or track[e.i].amsh_active) then
+    reset_track(e.i)
+    pattern[e.p].active_mash[e.i] = 0
+    coin = 0
+    dirtyscreen = true
   end
 end
 
+is_pattern_rec = false
 pattern = {}
 for i = 1, 4 do
   pattern[i] = _r.new("pattern "..i)
@@ -498,15 +583,9 @@ end
 
 function check_mash_state(n)
   for i = 1, NUM_TRACKS do
-    if pattern[n].active_mash[i] == track[i].active_mash then
+    if pattern[n].active_mash[i] == track[i].active_mash and track[i].active_mash > 0 then
       if heldkey[i] < 1 and not track[i].hold then
         reset_track(i)
-        mash_active = get_global_mash_state()
-        track[i].mash = false
-        if track[i].prev_rec and not track[i].rec then
-          track[i].prev_rec = false
-          toggle_rec(i)
-        end
         coin = 0
         dirtyscreen = true
       end
@@ -608,15 +687,18 @@ function init()
   local name = {"[ONE]", "[TWO]", "[TRI]"}
   params:add_separator("track_params", "s t w n s h")
   for i = 1, NUM_TRACKS do
-    params:add_group("track_"..i, "track "..name[i], 12)
+    params:add_group("track_"..i, "track "..name[i], 14)
     
-    params:add_separator("track_settings_"..i, "track "..name[i].." settings")
+    params:add_separator("track_settings_"..i, name[i].." settings")
     -- track length
     params:add_number("track_length_"..i, "track length", 1, 64, 4, function(param) return param:get()..(param:get() > 1 and "beats" or "beat") end)
     params:set_action("track_length_"..i, function(x) track[i].beat_num_new = x end)
     -- track level
     params:add_control("track_level_"..i, "track level", controlspec.new(0, 1, "lin", 0, 1), function(param) return (round_form(util.linlin(0, 1, 0, 100, param:get()), 1, "%")) end)
     params:set_action("track_level_"..i, function(x) track[i].level = x set_levels(i) end)
+    -- track source
+    params:add_option("input_src_"..i, "input source", {"stereo", "mono l", "mono r", "eng", "tape"}, 1)
+    params:set_action("input_src_"..i, function(option) set_softcut_input(i, option) end)
     -- rec level
     params:add_control("rec_level_"..i, "rec level", controlspec.new(0, 1, "lin", 0, 1), function(param) return (round_form(util.linlin(0, 1, 0, 100, param:get()), 1, "%")) end)
     params:set_action("rec_level_"..i, function(x) track[i].rec_level = x set_rec(i) end)
@@ -633,7 +715,10 @@ function init()
     params:add_option("track_fliter_type_"..i, "filter type", {"low pass", "high pass", "band pass", "band reject"}, 1)
     params:set_action("track_fliter_type_"..i, function(option) set_filter_type(i, option) end)
 
-    params:add_separator("track_control_"..i, "track "..name[i].." control")
+    params:add_separator("track_control_"..i, name[i].." control")
+
+    params:add_binary("track_toggle_amsh_"..i, "> toggle auto mash", "trigger", 0)
+    params:set_action("track_toggle_amsh_"..i, function() toggle_amsh(i) end)
 
     params:add_binary("track_toggle_rec_"..i, "> toggle rec", "trigger", 0)
     params:set_action("track_toggle_rec_"..i, function() toggle_rec(i) end)
@@ -645,6 +730,7 @@ function init()
     params:set_action("track_toggle_monitor_"..i, function() toggle_monitor(i) end)
   end
 
+  -- mash slots
   for i = 1, NUM_SLOTS do
     params:add_group("mash_"..i, "mash "..i, 12)
     params:hide("mash_"..i)
@@ -683,7 +769,7 @@ function init()
     params:add_control("mash_rate_slew_r_"..i, "rate slew right", controlspec.new(0, 1, "lin", 0, 0))
     params:set_action("mash_rate_slew_r_"..i, function(x) mash[i].rate_slew_r = x end)
   end
-
+  
   -- patterns params
   params:add_group("patterns", "patterns", 28)
   params:hide("patterns")
@@ -714,17 +800,31 @@ function init()
 
   -- pset callbacks
   params.action_write = function(filename, name, number)
-    os.execute("mkdir -p "..norns.state.data.."patterns/"..number.."/")
-    local pattern_data = {}
+    os.execute("mkdir -p "..norns.state.data.."presets/"..number.."/")
+    local pset_data = {}
+    pset_data.pattern = {}
+    pset_data.amsh = {}
+    for i = 1, 4 do
+      pset_data.pattern[i] = {}
+      pset_data.pattern[i].count = pattern[i].count
+      pset_data.pattern[i].event = deep_copy(pattern[i].event)
+      pset_data.pattern[i].endpoint = pattern[i].endpoint
+    end
+    for i = 1, NUM_TRACKS do
+      pset_data.amsh[i] = {}
+      pset_data.amsh[i].beatnum = track[i].amsh_beatnum
+      pset_data.amsh[i].step_max = track[i].amsh_step_max
+      pset_data.amsh[i].pattern = {}
+      for s = 1, 16 do
+        pset_data.amsh[i].pattern[s] = {}
+        pset_data.amsh[i].pattern[s].step = track[i].amsh_pattern[s].step
+        pset_data.amsh[i].pattern[s].prob = track[i].amsh_pattern[s].prob
+        pset_data.amsh[i].pattern[s].pool = {table.unpack(track[i].amsh_pattern[s].pool)}
+      end
+    end
     clock.run(function() 
       clock.sleep(0.5)
-      for i = 1, 4 do
-        pattern_data[i] = {}
-        pattern_data[i].count = pattern[i].count
-        pattern_data[i].event = deep_copy(pattern[i].event)
-        pattern_data[i].endpoint = pattern[i].endpoint
-      end
-      tab.save(pattern_data, norns.state.data.."patterns/"..number.."/"..name.."_pattern.data")
+      tab.save(pset_data, norns.state.data.."presets/"..number.."/"..name.."_preset.data")
       print("finished writing pset:'"..name.."'")
     end)
   end
@@ -735,11 +835,20 @@ function init()
       io.input(loaded_file)
       local pset_id = string.sub(io.read(), 4, -1)
       io.close(loaded_file)
-      local pattern_data = tab.load(norns.state.data.."patterns/"..number.."/"..pset_id.."_pattern.data")
+      local pset_data = tab.load(norns.state.data.."presets/"..number.."/"..pset_id.."_preset.data")
       for i = 1, 4 do
-        pattern[i].count = pattern_data[i].count
-        pattern[i].event = deep_copy(pattern_data[i].event)
-        pattern[i].endpoint = pattern_data[i].endpoint
+        pattern[i].count = pset_data.pattern[i].count
+        pattern[i].event = deep_copy(pset_data.pattern[i].event)
+        pattern[i].endpoint = pset_data.pattern[i].endpoint
+      end
+      for i = 1, NUM_TRACKS do
+        track[i].amsh_beatnum = pset_data.amsh[i].beatnum
+        track[i].amsh_step_max = pset_data.amsh[i].step_max
+        for s = 1, 16 do
+          track[i].amsh_pattern[s].step = pset_data.amsh[i].pattern[s].step
+          track[i].amsh_pattern[s].prob = pset_data.amsh[i].pattern[s].prob
+          track[i].amsh_pattern[s].pool = {table.unpack(pset_data.amsh[i].pattern[s].pool)}
+        end
       end
       dirtygrid = true
       print("finished reading pset:'"..pset_id.."'")
@@ -777,12 +886,13 @@ function init()
   set_track_len(3, 8)
 
   -- metros
-  screenredrawtimer = metro.init(function() screen_redraw() end, 1/15, -1) -- // metro for screen redraw
+  screenredrawtimer = metro.init(function() screen_redraw() end, 1/15, -1)
   screenredrawtimer:start()
   dirtyscreen = true
 
-  hardwareredrawtimer = metro.init(function() hardware_redraw() end, 1/30, -1) -- // metro for gridredraw
+  hardwareredrawtimer = metro.init(function() hardware_redraw() end, 1/30, -1)
   hardwareredrawtimer:start()
+  dirtygrid = true
 
   -- clocks
   key_quantizer = clock.run(event_q_clock)
@@ -791,9 +901,11 @@ function init()
   clock.run(function()
     clock.sync(4)
     for i = 1, NUM_TRACKS do
+      track[i].step = 0
+      track[i].amsh_step = 0
       tracksync[i] = clock.run(reset_pos, i)
       trackstep[i] = clock.run(step_track, i)
-      track[i].step = 0
+      amshstep[i] = clock.run(step_amsh, i)
     end
     is_running = true
   end)
@@ -903,6 +1015,12 @@ function enc(n, d)
       params:delta(track_r_params[track_param]..track_focus, d)
     end
     dirtyscreen = true
+  elseif amsh_step_edit > 0 then
+    if n == 2 or n == 3 then
+      local step_prob = track[track_focus].amsh_pattern[amsh_step_edit].prob
+      track[track_focus].amsh_pattern[amsh_step_edit].prob = util.clamp(step_prob + d, 0, 100)
+    end
+    dirtyscreen = true
   else
     if n == 2 then
       font_size_off = util.clamp(font_size_off + d, -7, 32)
@@ -999,6 +1117,15 @@ function redraw()
     screen.text_center(params:string(track_l_params[track_param]..track_focus))
     screen.move(98, 39)
     screen.text_center(params:string(track_r_params[track_param]..track_focus))
+  elseif amsh_step_edit > 0 then
+    screen.font_face(2)
+    screen.font_size(8)
+    screen.level(15)
+    screen.move(64, 12)
+    screen.text_center("STEP  PROBABILITY")
+    screen.font_size(32)
+    screen.move(64, 48)
+    screen.text_center(track[track_focus].amsh_pattern[amsh_step_edit].prob.."%")
   else
     coin = 0
     if mash_active then
@@ -1060,10 +1187,12 @@ function gridkey_patterns(i)
             local mode = params:get("pattern_rec_mode_"..i) == 3 and 1 or 2
             local dur = params:get("pattern_rec_mode_"..i) ~= 1 and pattern[i].length or nil
             pattern[i]:set_rec(mode, dur, beat_sync)
+            is_pattern_rec = true
           end
         else
           pattern[i]:set_rec(0)
           pattern[i]:stop()
+          is_pattern_rec = false
         end
       else
         pattern[i]:start(beat_sync)
@@ -1073,13 +1202,16 @@ function gridkey_patterns(i)
         if pattern[i].rec == 1 then
           pattern[i]:set_rec(0)
           pattern[i]:undo()
-          check_mash_state()
+          check_mash_state(i)
+          is_pattern_rec = false
         else
-          pattern[i]:set_rec(1)               
+          pattern[i]:set_rec(1)
+          is_pattern_rec = true               
         end
       else
         if pattern[i].rec == 1 then
           pattern[i]:set_rec(0)
+          is_pattern_rec = false
           if pattern[i].count == 0 then
             pattern[i]:stop()
           end
@@ -1092,23 +1224,54 @@ function gridkey_patterns(i)
 end
 
 function g.key(x, y, z)
-  local i = math.floor(x / 4) + 1
-  if y == 5 and x < 12 then
-    if x == (1 + (i - 1) * 4) and z == 1 then
+  local i = x > 8 and 3 or (x > 4 and 2 or 1)
+  if y < 4 then
+    if track[y].amsh_edit then
+      if z == 1 then
+        amsh_step_edit = x
+        -- doublepress
+        if track[y].endpoint_clock == nil then
+          track[y].endpoint_clock = clock.run(function()
+            clock.sleep(0.2)
+            track[y].endpoint_clock = nil
+          end)
+        else
+          track[y].amsh_step_max = x -- if clock still running then set endpoint
+        end
+      elseif z == 0 then
+        local state = #track[y].amsh_pattern[x].pool > 0 and true or false
+        track[y].amsh_pattern[x].step = state
+        amsh_step_edit = 0
+      end
+      dirtyscreen = true
+    end
+  elseif y == 5 and x < 13 then
+    if (x == 1 or x == 5 or x == 9) and z == 1 and not track[i].amsh_active then
       toggle_rec(i)
-    elseif x == (2 + (i - 1) * 4) and z == 1 then
+    elseif (x == 2 or x == 6 or x == 10) and z == 1 and not track[i].amsh_active then
       track[i].oneshot = not track[i].oneshot
       if track[i].rec and track[i].oneshot then
         track[i].rec = false
         set_rec(i)
       end
-    elseif x == (3 + (i - 1) * 4) and z == 1 then
+    elseif (x == 3 or x == 7 or x == 11) and z == 1 and not track[i].amsh_active then
       track[i].hold = not track[i].hold
       if not track[i].hold and heldkey[i] < 1 then
-        track[i].mash = false
-        mash_active = get_global_mash_state()
         reset_track(i)
       end
+    elseif (x == 4 or x == 8 or x == 12) then
+      editkey = editkey + (z * 2 - 1)
+      track_focus = i
+      if z == 1 then
+        for n = 1, 3 do
+          if n == i then
+            track[n].amsh_edit = not track[n].amsh_edit
+          else
+            track[n].amsh_edit = false
+          end
+        end
+      end
+      dirtyscreen = true
     end
   elseif y == 5 and x > 12 then
     if x == 13 then
@@ -1122,33 +1285,48 @@ function g.key(x, y, z)
         pattern_clear = true
         pattern_overdub = false
       end
+    elseif x == 15 and z == 1 then
+      toggle_amsh(1)
     elseif x == 16 and z == 1 then
       toggle_monitor(1)
     end
+  elseif y == 4 and z == 1 then
+    track[track_focus].amsh_beatnum = x
   elseif y > 5 then
     if (x < 4 or (x > 4 and x < 8) or (x > 8 and x < 12)) then
       local slot = (x - ((i - 1) * 4)) + (y - 6) * 3
       heldkey[i] = heldkey[i] + (z * 2 - 1)
-      track[i].mash = (z == 1 or track[i].hold or heldkey[i] > 0) and true or false
-      if track[i].mash then
+      if amsh_step_edit > 0 then
+        local collection = track[i].amsh_pattern[amsh_step_edit].pool
         if z == 1 then
-          local e = {t = eMASH, i = i, slot = slot, p = pattern_focus}
-          table.insert(quantize_event, e)
+          if tab.contains(collection, slot) then
+            table.remove(collection, tab.key(collection, slot))
+          else
+            table.insert(collection, slot)
+          end
         end
       else
-        local e = {t = eREST, i = i, p = pattern_focus}
-        table.insert(quantize_event, e)
-      end
-      if mash_edit and z == 1 then
-        mash_focus = slot
-        dirtyscreen = true
+        track[i].mash = (z == 1 or track[i].hold or heldkey[i] > 0) and true or false
+        if track[i].mash then
+          if z == 1 then
+            local e = {t = eMASH, i = i, slot = slot, p = pattern_focus}
+            table.insert(quantize_event, e)
+          end
+        else
+          local e = {t = eRSET, i = i, p = pattern_focus}
+          table.insert(quantize_event, e)
+        end
+        if mash_edit and z == 1 then
+          mash_focus = slot
+          dirtyscreen = true
+        end
       end
     elseif (x == 4 or x == 8 or x == 12) then
       if not (mash_edit or pattern_edit) then
         editkey = editkey + (z * 2 - 1)
         if z == 1 then
           track_edit = true
-          track_focus = i - 1
+          track_focus = i
           track_param = y - 5
         elseif z == 0 and editkey < 1 then
           track_edit = false
@@ -1164,9 +1342,12 @@ function g.key(x, y, z)
       else
         gridkey_patterns(pattern_focus)
       end
+    elseif y < 8 and x == 15 and z == 1 then
+      local n = y - 4
+      toggle_amsh(n)
     elseif y < 8 and x == 16 and z == 1 then
-      local track = y - 4
-      toggle_monitor(track)
+      local n = y - 4
+      toggle_monitor(n)
     elseif y == 8 and x == 13 and z == 1 then
       mash_edit = not mash_edit 
       if mash_edit and pattern_edit then
@@ -1190,14 +1371,23 @@ function gridredraw()
   g:all(0)
   -- view track lanes
   for i = 1, NUM_TRACKS do
-    if track[i].mash then
-      g:led(playhead[i].pos_grid, i, 15)
-      g:led(playhead[i + 3].pos_grid, i, 8)
+    if track[i].amsh_edit then
+      for x = 1, 16 do
+        if x <= track[i].amsh_step_max then
+          g:led(x, i, track[i].amsh_step == x and 10 or (track[i].amsh_pattern[x].step and 6 or 2))
+        end
+        g:led(x, 4, track[i].amsh_beatnum == x and 10 or ((x == 1 or x == 4 or x == 8 or x == 12 or x == 16) and 2 or 0))
+      end
     else
-      g:led(track[i].step, i, is_running and (track[i].rec and 15 or 4) or 0)
+      if track[i].mash then
+        g:led(playhead[i].pos_grid, i, 15)
+        g:led(playhead[i + 3].pos_grid, i, 8)
+      else
+        g:led(track[i].step, i, is_running and (track[i].rec and 15 or 4) or 0)
+      end
     end
   end
-  -- view track actions
+  -- view track mash slots
   for x = 1, 3 do
     for y = 6, 8 do
       g:led(x, y, 2)
@@ -1206,27 +1396,35 @@ function gridredraw()
     end
   end
   for i = 1, 3 do
-    local slot = track[i].active_mash
-    if mash_edit then slot = mash_focus end
-    if slot > 0 and slot < 4 then
-      g:led((slot - 4) + 4 * i, 6, 15)
-    elseif slot > 3 and slot < 7 then
-      g:led((slot - 7) + 4 * i, 7, 15)
-    elseif slot > 6 then
-      g:led((slot - 10) + 4 * i, 8, 15)
+    if track[i].amsh_edit and amsh_step_edit > 0 then
+      for _, v in ipairs(track[i].amsh_pattern[amsh_step_edit].pool) do
+        if v > 0 and v < 4 then
+          g:led((v - 4) + 4 * i, 6, 8)
+        elseif v > 3 and v < 7 then
+          g:led((v - 7) + 4 * i, 7, 8)
+        elseif v > 6 then
+          g:led((v - 10) + 4 * i, 8, 8)
+        end
+      end
+    else
+      local slot = mash_edit and mash_focus or track[i].active_mash
+      if slot > 0 and slot < 4 then
+        g:led((slot - 4) + 4 * i, 6, 15)
+      elseif slot > 3 and slot < 7 then
+        g:led((slot - 7) + 4 * i, 7, 15)
+      elseif slot > 6 then
+        g:led((slot - 10) + 4 * i, 8, 15)
+      end
     end
   end
-  -- rec
+  -- top keys
   for i = 1, 3 do
-    g:led((i - 1) * 4 + 1, 5, track[i].rec and pulse_key_mid or 8)
-  end
-  -- oneshot
-  for i = 1, 3 do
-    g:led((i - 1) * 4 + 2, 5, track[i].oneshot and pulse_key_slow or 4)
-  end
-  -- hold
-  for i = 1, 3 do
-    g:led((i - 1) * 4 + 3, 5, track[i].hold and 15 or 6)
+    -- rec
+    g:led((i - 1) * 4 + 1, 5, track[i].amsh_active and 1 or (track[i].rec and pulse_key_mid or 8))
+    -- oneshot
+    g:led((i - 1) * 4 + 2, 5, track[i].amsh_active and 1 or (track[i].oneshot and pulse_key_slow or 4))
+    -- hold
+    g:led((i - 1) * 4 + 3, 5, track[i].amsh_active and 1 or (track[i].hold and 15 or 6))
   end
   g:led(13, 5, pattern_overdub and 15 or (pattern_clear and pulse_key_slow or 8))
   g:led(14, 5, pattern_clear and pulse_key_slow or 6)
@@ -1253,14 +1451,18 @@ function gridredraw()
   end
   -- track edit
   for i = 1, 3 do
-    local track = track_focus * 4
-    g:led(track, i + 5, (track_edit and track_param == i) and 8 or 0)
-    g:led(track, 5, track_edit and pulse_key_slow or 0)
+    local x = track_focus * 4
+    g:led(x, 5, track[track_focus].amsh_edit and pulse_key_slow or (track_edit and 4 or 0))
+    g:led(x, i + 5, (track_edit and track_param == i) and 8 or 0)
   end
   -- mash edit
   g:led(13, 8, mash_edit and pulse_key_slow or 1)
   -- pattern edit
   g:led(14, 8, pattern_edit and pulse_key_slow or 1)
+  -- trig mode
+  for i = 1, 3 do
+    g:led(15, i + 4, track[i].amsh_queued and 6 or (track[i].amsh_active and pulse_key_mid or 0))
+  end
   -- monitor
   for i = 1, 3 do
     g:led(16, i + 4, track[i].monitor and 10 or 2)
@@ -1310,6 +1512,11 @@ function pan_display(param)
     pos_left = ""
   end
   return (pos_left..math.abs(util.round(util.linlin(-1, 1, -100, 100, param), 1))..pos_right)
+end
+
+function build_menu(i)
+  _menu.rebuild_params()
+  dirtyscreen = true
 end
 
 --------- cleanup ----------
