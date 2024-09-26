@@ -1,4 +1,4 @@
--- stwnsh v0.1.6 @sonocircuit
+-- stwnsh v1.0.0 @sonocircuit
 -- llllllll.co/t/stwnsh
 --
 -- mash recordings at 
@@ -35,6 +35,7 @@ local mash_edit = false
 local mash_param = 1
 local mash_focus = 1
 local amsh_step_edit = 0
+local amsh_rate_edit = false
 
 local is_running = false
 local beat_sec = 60 / params:get("clock_tempo")
@@ -65,6 +66,8 @@ local pulse_key_slow = 1
 local font_size_off = 0
 local screen_level_off = 0
 local coin = 0
+local screen_message = 0
+
 
 -- constants
 local NUM_TRACKS = 3
@@ -93,6 +96,8 @@ options.key_quant_names = {"1/32", "1/16", "1/8", "1/4", "1/2", "1/1"}
 options.key_quant_values = {1/8, 1/4, 1/2, 1, 2, 4}
 options.mash_length_names = {"1/16", "1/8", "3/16", "1/4", "5/16", "3/8", "7/16", "1/2", "9/16", "5/8", "11/16", "3/4", "13/16", "7/8", "15/16", "1"}
 options.mash_length_values = {1/16, 1/8, 3/16, 1/4, 5/16, 3/8, 7/16, 1/2, 9/16, 5/8, 11/16, 3/4, 13/16, 7/8, 15/16, 1}
+options.amsh_rate_names = {"32/4", "16/4", "8/4", "4/4", "3/4", "2/3", "1/2", "3/8", "1/3", "1/4", "3/16", "1/6", "1/8", "3/32", "1/12", "1/16"}
+options.amsh_rate_values = {8, 4, 2, 1, 3/4, 2/3, 1/2, 3/8, 1/3, 1/4, 3/16, 1/6, 1/8, 3/32, 1/12, 1/16}
 
 -- track params
 local track_l_params = {"track_length_", "input_src_", "track_cutoff_"}
@@ -110,6 +115,13 @@ local pattern_l_params = {"pattern_rec_mode_", "pattern_meter_", "pattern_launch
 local pattern_r_params = {"pattern_playback_", "pattern_beatnum_", "pattern_quantize_"}
 local pattern_l_names = {"REC  MODE", "METER", "LAUNCH"}
 local pattern_r_names = {"PLAYBACK", "LENGTH", "QUANTIZE"}
+
+-- screen messages
+local msg = {
+  {"S", "T", "A", "R", "T"},
+  {"R", "E", "S", "E", "T"},
+  {"S", "T", "O", "P", "!"}
+}
 
 -- track variables
 local track = {}
@@ -137,7 +149,7 @@ for i = 1, NUM_TRACKS do
   track[i].amsh_queued = false
   track[i].amsh_active = false
   track[i].amsh_edit = false
-  track[i].amsh_beatnum = 4
+  track[i].amsh_rate = 4
   track[i].amsh_step = 0
   track[i].amsh_step_max = 16
   track[i].amsh_pattern = {}
@@ -464,6 +476,8 @@ function start_all()
     reset_track_pos(i)
   end
   is_running = true
+  screen_message = 0
+  dirtyscreen = true
 end
 
 function stop_all()
@@ -478,6 +492,13 @@ function stop_all()
   for i = 1, NUM_PATTERNS do
     pattern[i]:stop()
   end
+  screen_message = 3
+  dirtyscreen = true
+  clock.run(function()
+    clock.sleep(0.8)
+    screen_message = 0
+    dirtyscreen = true
+  end)
 end
 
 
@@ -528,7 +549,7 @@ end
 
 function step_amsh(i)
   while true do
-    clock.sync(track[i].amsh_beatnum / 16)
+    clock.sync(options.amsh_rate_values[track[i].amsh_rate])
     if track[i].amsh_step >= track[i].amsh_step_max then
       track[i].amsh_step = 0
     end
@@ -893,7 +914,7 @@ function init()
     end
     for i = 1, NUM_TRACKS do
       pset_data.amsh[i] = {}
-      pset_data.amsh[i].beatnum = track[i].amsh_beatnum
+      pset_data.amsh[i].rate = track[i].amsh_rate
       pset_data.amsh[i].step_max = track[i].amsh_step_max
       pset_data.amsh[i].pattern = {}
       for s = 1, 16 do
@@ -923,7 +944,7 @@ function init()
         pattern[i].endpoint = pset_data.pattern[i].endpoint
       end
       for i = 1, NUM_TRACKS do
-        track[i].amsh_beatnum = pset_data.amsh[i].beatnum
+        track[i].amsh_rate = pset_data.amsh[i].rate
         track[i].amsh_step_max = pset_data.amsh[i].step_max
         for s = 1, 16 do
           track[i].amsh_pattern[s].step = pset_data.amsh[i].pattern[s].step
@@ -1053,8 +1074,10 @@ function key(n, z)
    -- do nothing
   else
     if n == 2 and z == 1 then
-      if transport_clock ~= nil then
+      if transport_clock == nil then
         transport_clock = clock.run(function()
+          screen_message = is_running and 2 or 1
+          dirtyscreen = true
           clock.sync(4)
           start_all()
           if midi_trns == 2 then
@@ -1127,7 +1150,15 @@ end
 
 function redraw()
   screen.clear()
-  if quantize_edit then
+  if screen_message > 0 then
+    for i = 1, #msg[screen_message] do
+      screen.level(math.random(2, 15))
+      screen.font_face(math.random(1, 24))
+      screen.font_size(math.random(14, 48))
+      screen.move(32 + (i - 1) * 16, math.random(32, 48))
+      screen.text_center(msg[screen_message][i])
+    end
+  elseif quantize_edit then
     -- mash edit params
     screen.font_face(2)
     screen.font_size(8)
@@ -1219,6 +1250,15 @@ function redraw()
     screen.font_size(32)
     screen.move(64, 48)
     screen.text_center(track[track_focus].amsh_pattern[amsh_step_edit].prob.."%")
+  elseif amsh_rate_edit then
+    screen.font_face(2)
+    screen.font_size(8)
+    screen.level(15)
+    screen.move(64, 12)
+    screen.text_center("STEP  RATE")
+    screen.font_size(32)
+    screen.move(64, 48)
+    screen.text_center(options.amsh_rate_names[track[track_focus].amsh_rate])
   else
     coin = 0
     if mash_active then
@@ -1354,6 +1394,14 @@ function g.key(x, y, z)
         end)
       end
     end
+  elseif y == 4 then
+    amsh_rate_edit = z == 1 and true or false
+    if z == 1 then
+      if track[track_focus].amsh_edit then
+        track[track_focus].amsh_rate = x
+      end
+    end
+    dirtyscreen = true
   elseif y == 5 and x < 13 then
     if (x == 1 or x == 5 or x == 9) and z == 1 and not track[i].amsh_active then
       toggle_rec(i)
@@ -1397,10 +1445,6 @@ function g.key(x, y, z)
       toggle_amsh(1)
     elseif x == 16 and z == 1 then
       toggle_monitor(1)
-    end
-  elseif y == 4 and z == 1 then
-    if track[track_focus].amsh_edit then
-      track[track_focus].amsh_beatnum = x
     end
   elseif y > 5 then
     if (x < 4 or (x > 4 and x < 8) or (x > 8 and x < 12)) then
@@ -1493,7 +1537,7 @@ function gridredraw()
         if x <= track[i].amsh_step_max then
           g:led(x, i, track[i].amsh_step == x and 10 or (track[i].amsh_pattern[x].step and 6 or 2))
         end
-        g:led(x, 4, track[i].amsh_beatnum == x and 10 or ((x == 1 or x == 4 or x == 8 or x == 12 or x == 16) and 2 or 0))
+        g:led(x, 4, track[i].amsh_rate == x and 10 or ((x == 1 or x == 4 or x == 7 or x == 10 or x == 13 or x == 16) and 2 or 0))
       end
     else
       if track[i].mash then
