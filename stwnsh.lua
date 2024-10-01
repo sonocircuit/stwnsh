@@ -73,7 +73,7 @@ local screen_message = 0
 local NUM_TRACKS = 3
 local NUM_SLOTS = 9
 local NUM_PATTERNS = 4
-local FADE_TIME = 0.1
+local FADE_TIME = 0.02
 local REC_SLEW = 0.01
 local MAX_TAPELENGTH = 110
 local DEFAULT_TRACK_LEN = 16
@@ -120,7 +120,8 @@ local pattern_r_names = {"PLAYBACK", "LENGTH", "QUANTIZE"}
 local msg = {
   {"S", "T", "A", "R", "T"},
   {"R", "E", "S", "E", "T"},
-  {"S", "T", "O", "P", "!"}
+  {"S", "T", "O", "P", "!"},
+  {"C", "L", "E", "A", "R"}
 }
 
 -- track variables
@@ -372,6 +373,11 @@ function set_softcut_input(i, option)
   end
 end
 
+function clear_track_buffer(i)
+  softcut.buffer_clear_region_channel(1, track[i].startpoint - 0.2, MAX_TAPELENGTH + 0.2)
+  softcut.buffer_clear_region_channel(2, track[i].startpoint, MAX_TAPELENGTH)
+end
+
 function toggle_rec(i)
   track[i].rec = not track[i].rec
   set_rec(i)
@@ -475,8 +481,8 @@ function start_all()
     track[i].amsh_step = 0
     reset_track_pos(i)
   end
-  is_running = true
   screen_message = 0
+  is_running = true
   dirtyscreen = true
 end
 
@@ -633,7 +639,9 @@ end
 function event_exec(e)
   if not track[e.i].amsh_active then
     if e.t == eMASH then
-      track[e.i].prev_rec = track[e.i].rec and true or false
+      if not track[e.i].prev_rec then
+        track[e.i].prev_rec = track[e.i].rec and true or false
+      end
       make_mash(e.i, e.slot)
       pattern[e.p].active_mash[e.i] = e.slot
     elseif e.t == eRSET and not track[e.i].hold then
@@ -1158,7 +1166,7 @@ function redraw()
       screen.move(32 + (i - 1) * 16, math.random(32, 48))
       screen.text_center(msg[screen_message][i])
     end
-  elseif quantize_edit then
+  elseif quantize_edit and not modkey then
     -- mash edit params
     screen.font_face(2)
     screen.font_size(8)
@@ -1386,11 +1394,24 @@ function g.key(x, y, z)
       end
       dirtyscreen = true
     else
-      if modkey then
+      if modkey and not quantize_edit and z == 1 then
+        screen_message = 2
+        dirtyscreen = true
         clock.run(function()
           clock.sync(1)
           track[y].step = 0
           reset_track_pos(i)
+          screen_message = 0
+          dirtyscreen = true
+        end)
+      elseif quantize_edit and modkey and z == 1 then
+        screen_message = 4
+        dirtyscreen = true
+        clear_track_buffer(y)
+        clock.run(function()
+          clock.sleep(1)
+          screen_message = 0
+          dirtyscreen = true
         end)
       end
     end
@@ -1403,9 +1424,9 @@ function g.key(x, y, z)
     end
     dirtyscreen = true
   elseif y == 5 and x < 13 then
-    if (x == 1 or x == 5 or x == 9) and z == 1 and not track[i].amsh_active then
+    if (x == 1 or x == 5 or x == 9) and z == 1 and not (track[i].amsh_active or track[i].mash) then
       toggle_rec(i)
-    elseif (x == 2 or x == 6 or x == 10) and z == 1 and not track[i].amsh_active then
+    elseif (x == 2 or x == 6 or x == 10) and z == 1 and not (track[i].amsh_active or track[i].mash) then
       track[i].oneshot = not track[i].oneshot
       if track[i].rec and track[i].oneshot then
         track[i].rec = false
@@ -1521,6 +1542,7 @@ function g.key(x, y, z)
       dirtyscreen = true
     elseif y == 8 and x == 15 then
       modkey = z == 1 and true or false
+      dirtyscreen = true
     elseif y == 8 and x == 16 then
       quantize_edit = z == 1 and true or false
       dirtyscreen = true
@@ -1645,7 +1667,10 @@ function screen_redraw()
 end
 
 function hardware_redraw()
-  gridredraw()
+  if dirtygrid then
+    gridredraw()
+    dirtygrid = false
+  end
 end
 
 
