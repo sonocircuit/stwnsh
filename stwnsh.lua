@@ -16,7 +16,7 @@ local g = grid.connect()
 local m = midi.connect()
 
 local _l = require 'lattice'
-local _r = include 'lib/stwnsh_reflection'
+local _r = require 'reflection'
 
 --------- variables ----------
 local load_pset = false
@@ -661,6 +661,10 @@ for i = 1, NUM_PATTERNS do
   pattern[i].end_of_loop_callback = function() check_mash_state(i) end
   pattern[i].end_of_rec_callback = function()  end
   pattern[i].end_callback = function() check_mash_state(i) end
+  pattern[i].key_flash = false
+  pattern[i].meter = 4/4
+  pattern[i].beatnum = 16
+  pattern[i].length = 16
   pattern[i].active_mash = {}
   for track = 1, NUM_TRACKS do
     pattern[i].active_mash[track] = 0
