@@ -1,4 +1,4 @@
--- stwnsh v1.0.0 @sonocircuit
+-- stwnsh v1.0.1 @sonocircuit
 -- llllllll.co/t/stwnsh
 --
 -- mash recordings at 
@@ -592,7 +592,7 @@ end
 
 function ledpulse_bar()
   while true do
-    clock.sync(4)
+    clock.sync(bar_val)
     pulse_bar = true
     clock.run(function()
       clock.sleep(1/30)
@@ -841,6 +841,9 @@ function init()
   params:add_number("midi_channel", "midi channel", 1, 16, 1)
   params:set_action("midi_channel", function(val) midi_ch = val end)
 
+  params:add_number("time_signature", "time signature", 2, 9, 4, function(param) return param:get().."/4" end)
+  params:set_action("time_signature", function(val) bar_val = val end)
+  params:hide("time_signature")
 
   -- mash slots
   for i = 1, NUM_SLOTS do
@@ -1090,7 +1093,7 @@ function key(n, z)
         transport_clock = clock.run(function()
           screen_message = is_running and 2 or 1
           dirtyscreen = true
-          clock.sync(4)
+          clock.sync(bar_val)
           start_all()
           if midi_trns == 2 then
             m:start()
@@ -1115,7 +1118,7 @@ function enc(n, d)
   end
   if quantize_edit then
     if n == 2 then
-      params:delta("key_quantization", d)
+      params:delta("time_signature", d)
     elseif n == 3 then
       params:delta("key_quantization", d)
     end
@@ -1174,12 +1177,18 @@ function redraw()
     -- mash edit params
     screen.font_face(2)
     screen.font_size(8)
-    screen.level(15)
-    screen.move(64, 12)
-    screen.text_center("KEY  QUANTIZATION")
-    screen.font_size(32)
-    screen.move(64, 48)
+    screen.level(8)
+    screen.font_size(24)
+    screen.move(32, 40)
+    screen.text_center(params:string("time_signature"))
+    screen.move(96, 40)
     screen.text_center(params:string("key_quantization"))
+    screen.font_size(8)
+    screen.level(8)
+    screen.move(32, 60)
+    screen.text_center("time  signature")
+    screen.move(96, 60)
+    screen.text_center("key  quantization")
 
   elseif mash_edit then
     -- mash edit params
@@ -1326,7 +1335,7 @@ function gridkey_patterns(i)
     pattern[i]:clear()
   else
     if pattern[i].play == 0 then
-      local beat_sync = params:get("pattern_launch_"..i) == 2 and 1 or (params:get("pattern_launch_"..i) == 3 and 4 or nil)
+      local beat_sync = params:get("pattern_launch_"..i) == 2 and 1 or (params:get("pattern_launch_"..i) == 3 and bar_val or nil)
       if pattern[i].count == 0 then
         if pattern[i].rec_enabled == 0 then
           if num_rec_enabled() == 0 then 
